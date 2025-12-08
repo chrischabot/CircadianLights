@@ -2,6 +2,22 @@
 
 *A macOS menu bar companion that teaches your smart lights to follow the sun.*
 
+![CircadianLights Settings](screenshot.png)
+
+## For Those Who Live on Camera
+
+This project began with a humble vanity: not looking like a tangerine during morning standups, nor a corpse during afternoon demos.
+
+The trouble with key lights is that they make you visible but not *natural*. Set them to 3200K while daylight streams through your window, and your face glows orange against a blue background. Match them to 5600K at sunset, and you become the wan protagonist of a Nordic noir.
+
+The solution requires two insights:
+
+1. **All your lights must agree.** When your Elgato Key Lights and Philips Hue bulbs share the same color temperature, you cease to look like a hostage in a ransom video. Your face matches your background. You simply look... lit.
+
+2. **That agreement must evolve.** As ambient daylight shifts through the day, your artificial lights should follow. This isn't merely aesthetic—it's how humans expect faces to look. We're wired to notice when illumination doesn't match the implied time of day.
+
+CircadianLights orchestrates this dance automatically. Set it once, forget it exists, and enjoy the quiet pleasure of colleagues never asking why you look "different today."
+
 ## Quick Start
 
 ```bash
