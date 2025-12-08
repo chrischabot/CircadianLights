@@ -25,3 +25,6 @@ DerivedData/
 # Archives
 *.zip
 *.tar.gz
+
+# Release builds
+dist/
