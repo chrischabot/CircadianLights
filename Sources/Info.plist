@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>CircadianLights</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.circadianlights.app</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>CircadianLights uses your location to calculate accurate sunrise and sunset times for your area.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>CircadianLights uses your location to calculate accurate sunrise and sunset times for your area.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_elg._tcp</string>
+        <string>_hue._tcp</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>CircadianLights needs local network access to discover and control your Philips Hue and Elgato lights.</string>
+</dict>
+</plist>
