@@ -899,6 +899,7 @@ struct ColorTempChartView: View {
 
 struct AdvancedTab: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var ambientLightService: AmbientLightService
     @State private var previewData: [(hour: Int, kelvin: Int, description: String)] = []
 
     var body: some View {
@@ -933,6 +934,110 @@ struct AdvancedTab: View {
             }
 
             Section {
+                HStack {
+                    Text("Status")
+                    Spacer()
+                    Text(statusText)
+                        .foregroundStyle(.secondary)
+                }
+
+                if ambientLightService.sensors.isEmpty {
+                    Text("No ambient light sensors detected (or access denied).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Sensor", selection: $appState.ambientSensorSelection) {
+                        Text("Auto (brightest)").tag("auto")
+                        ForEach(ambientLightService.sensors) { sensor in
+                            Text(sensorLabel(sensor)).tag(String(sensor.id))
+                        }
+                    }
+                    .frame(width: 360)
+
+                    if let selected = selectedSensor {
+                        LabeledContent("Illuminance", value: "\(Int(selected.illuminanceLux.rounded())) lux")
+                        LabeledContent("Ambient White", value: "\(selected.correlatedColorTemperatureKelvin)K")
+                    }
+                }
+
+                Toggle("Use for Elgato brightness (day/twilight)", isOn: $appState.useAmbientSensorForElgatoBrightness)
+
+                if appState.useAmbientSensorForElgatoBrightness {
+                    VStack(alignment: .leading, spacing: 10) {
+                        LabeledContent("Low Lux") {
+                            HStack(spacing: 8) {
+                                Slider(value: $appState.ambientBrightnessLuxLow, in: 1...2000, step: 1)
+                                Text("\(Int(appState.ambientBrightnessLuxLow.rounded()))")
+                                    .frame(width: 50, alignment: .trailing)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .onChange(of: appState.ambientBrightnessLuxLow) { _, newValue in
+                            if appState.ambientBrightnessLuxHigh <= newValue {
+                                appState.ambientBrightnessLuxHigh = newValue + 1
+                            }
+                        }
+
+                        LabeledContent("High Lux") {
+                            HStack(spacing: 8) {
+                                Slider(value: $appState.ambientBrightnessLuxHigh, in: 50...20000, step: 50)
+                                Text("\(Int(appState.ambientBrightnessLuxHigh.rounded()))")
+                                    .frame(width: 50, alignment: .trailing)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .onChange(of: appState.ambientBrightnessLuxHigh) { _, newValue in
+                            if newValue <= appState.ambientBrightnessLuxLow {
+                                appState.ambientBrightnessLuxHigh = appState.ambientBrightnessLuxLow + 1
+                            }
+                        }
+
+                        LabeledContent("Gamma") {
+                            HStack(spacing: 8) {
+                                Slider(value: $appState.ambientBrightnessGamma, in: 0.5...4.0, step: 0.1)
+                                Text(String(format: "%.1f", appState.ambientBrightnessGamma))
+                                    .frame(width: 50, alignment: .trailing)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                    Text("Higher gamma makes low ambient levels dimmer (helps avoid being washed out on overcast days).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("Radiance Indoor Factor") {
+                    HStack(spacing: 8) {
+                        Slider(value: $appState.elgatoRadianceIndoorFactor, in: 0.5...2.0, step: 0.1)
+                        Text(String(format: "%.1f", appState.elgatoRadianceIndoorFactor))
+                            .frame(width: 50, alignment: .trailing)
+                            .monospacedDigit()
+                    }
+                }
+                Text("Used when the ambient sensor is unavailable; higher values help when a bright window is behind you.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Blend daytime color temperature (True Tone-style)", isOn: $appState.useAmbientSensorForDaytimeColorTemperature)
+
+                if appState.useAmbientSensorForDaytimeColorTemperature {
+                    LabeledContent("Blend Strength") {
+                        HStack(spacing: 8) {
+                            Slider(value: $appState.ambientColorTemperatureStrength, in: 0...1, step: 0.05)
+                            Text("\(Int((appState.ambientColorTemperatureStrength * 100).rounded()))%")
+                                .frame(width: 50, alignment: .trailing)
+                                .monospacedDigit()
+                        }
+                    }
+                    Text("Applied only during day/twilight (when solar progress is within the 60-minute transition zones).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Ambient Sensor")
+            }
+
+            Section {
                 Button("Print Debug Info") {
                     print("=== CircadianLights Debug ===")
                     print("Enabled: \(appState.isEnabled)")
@@ -954,9 +1059,41 @@ struct AdvancedTab: View {
             previewData = appState.solarService.dailyTemperaturePreview()
         }
     }
+
+    private var statusText: String {
+        switch ambientLightService.status {
+        case .idle:
+            return "Idle"
+        case .unavailable:
+            return "Unavailable"
+        case .running:
+            return "\(ambientLightService.sensors.count) sensor(s)"
+        case .error(let message):
+            return "Error: \(message)"
+        }
+    }
+
+    private var selectedSensor: AmbientLightService.SensorReading? {
+        if appState.ambientSensorSelection == "auto" {
+            return ambientLightService.autoSelectedSensor
+        }
+        if let id = UInt64(appState.ambientSensorSelection) {
+            return ambientLightService.sensors.first(where: { $0.id == id })
+        }
+        return ambientLightService.autoSelectedSensor
+    }
+
+    private func sensorLabel(_ sensor: AmbientLightService.SensorReading) -> String {
+        let suffix = String(format: "%llX", sensor.id).suffix(6)
+        let lux = Int(sensor.illuminanceLux.rounded())
+        let k = sensor.correlatedColorTemperatureKelvin
+        return "\(sensor.product) …\(suffix) — \(lux) lux, \(k)K"
+    }
 }
 
 #Preview {
+    let appState = AppState()
     SettingsView()
-        .environmentObject(AppState())
+        .environmentObject(appState)
+        .environmentObject(appState.ambientLightService)
 }

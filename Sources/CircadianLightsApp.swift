@@ -8,6 +8,7 @@ struct CircadianLightsApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appDelegate.appState)
+                .environmentObject(appDelegate.appState.ambientLightService)
         }
     }
 }
@@ -55,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MenuBarView()
                 .environmentObject(appState)
+                .environmentObject(appState.ambientLightService)
         )
     }
 
@@ -78,7 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
                 button.image?.isTemplate = true
 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(300))
                     self?.updateIcon()
                 }
             }

@@ -18,7 +18,10 @@ let package = Package(
                 "Solar",
                 .product(name: "OpenMeteoSdk", package: "sdk")
             ],
-            path: "Sources"
+            path: "Sources",
+            linkerSettings: [
+                .linkedFramework("IOKit")
+            ]
         )
     ]
 )

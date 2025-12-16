@@ -38,6 +38,17 @@ final class AppState: ObservableObject {
     @AppStorage("weatherAdjustmentEnabled") var weatherAdjustmentEnabled: Bool = true
     @AppStorage("useCurveBasedBrightness") var useCurveBasedBrightness: Bool = true
 
+    // MARK: - Ambient Sensor Settings (Pro Display XDR / ALS)
+
+    @AppStorage("ambientSensorSelection") var ambientSensorSelection: String = "auto" // "auto" or registry id
+    @AppStorage("useAmbientSensorForElgatoBrightness") var useAmbientSensorForElgatoBrightness: Bool = true
+    @AppStorage("ambientBrightnessLuxLow") var ambientBrightnessLuxLow: Double = 50
+    @AppStorage("ambientBrightnessLuxHigh") var ambientBrightnessLuxHigh: Double = 5000
+    @AppStorage("ambientBrightnessGamma") var ambientBrightnessGamma: Double = 2.0
+    @AppStorage("useAmbientSensorForDaytimeColorTemperature") var useAmbientSensorForDaytimeColorTemperature: Bool = true
+    @AppStorage("ambientColorTemperatureStrength") var ambientColorTemperatureStrength: Double = 0.35
+    @AppStorage("elgatoRadianceIndoorFactor") var elgatoRadianceIndoorFactor: Double = 1.3
+
     // MARK: - Configurable Limits (persisted)
 
     @Published var brightnessLimits: CircadianCurve.BrightnessLimits {
@@ -55,6 +66,7 @@ final class AppState: ObservableObject {
     let elgatoService: ElgatoService
     let hueService: HueService
     let weatherService: WeatherService
+    let ambientLightService: AmbientLightService
     private var orchestratorTask: Task<Void, Never>?
 
     // MARK: - Update Status
@@ -83,6 +95,7 @@ final class AppState: ObservableObject {
         self.elgatoService = ElgatoService()
         self.hueService = HueService()
         self.weatherService = WeatherService()
+        self.ambientLightService = AmbientLightService()
         self.brightnessSchedule = Self.loadBrightnessSchedule()
         self.brightnessLimits = Self.loadBrightnessLimits()
         self.colorTempLimits = Self.loadColorTempLimits()
@@ -100,6 +113,8 @@ final class AppState: ObservableObject {
         Task {
             await testAllElgatoLights()
         }
+
+        ambientLightService.start()
     }
 
     // MARK: - Elgato Auto-Connect
@@ -166,6 +181,7 @@ final class AppState: ObservableObject {
             sunset: sunset,
             transitionMinutes: 60
         )
+        let isAmbientAdjustmentTime = currentDayProgress >= 0 && currentDayProgress <= 1
 
         // Fetch weather data if enabled
         var radiationFactor: Double? = nil
@@ -181,8 +197,12 @@ final class AppState: ObservableObject {
             currentRadiation = weatherService.currentRadiation
             radiationFactor = weatherService.normalizedRadiation
 
-            // Calculate cloud adjustment based on configured max
-            cloudAdjustment = weatherService.cloudCoverAdjustment(maxBoost: colorTempLimits.cloudBoostMax)
+            // Calculate actual applied cloud adjustment (matching CircadianCurve.colorTemperature logic)
+            cloudAdjustment = calculateActualCloudAdjustment(
+                progress: currentDayProgress,
+                cloudCover: currentCloudCover,
+                maxBoost: colorTempLimits.cloudBoostMax
+            )
         } else {
             cloudAdjustment = 0
         }
@@ -195,7 +215,18 @@ final class AppState: ObservableObject {
             cloudCover: weatherAdjustmentEnabled ? currentCloudCover : 0
         )
 
-        currentColorTemperature = kelvin
+        // True Tone-style: blend toward measured ambient during daylight.
+        if useAmbientSensorForDaytimeColorTemperature,
+           isAmbientAdjustmentTime,
+           let ambient = selectedAmbientReading(),
+           ambient.correlatedColorTemperatureKelvin > 1000 {
+            let strength = min(1.0, max(0.0, ambientColorTemperatureStrength))
+            let weight = strength * ambientBlendWeight(forLux: ambient.illuminanceLux)
+            let blended = Double(kelvin) * (1 - weight) + Double(ambient.correlatedColorTemperatureKelvin) * weight
+            currentColorTemperature = Int(min(7500, max(Double(colorTempLimits.warmest), blended)).rounded())
+        } else {
+            currentColorTemperature = kelvin
+        }
 
         // Calculate brightness using smooth curves
         if useCurveBasedBrightness {
@@ -205,11 +236,30 @@ final class AppState: ObservableObject {
                 radiationFactor: radiationFactor
             )
 
-            currentElgatoBrightness = CircadianCurve.elgatoBrightness(
-                progress: currentDayProgress,
-                limits: brightnessLimits,
-                radiationFactor: radiationFactor
-            )
+            if useAmbientSensorForElgatoBrightness,
+               isAmbientAdjustmentTime,
+               let ambient = selectedAmbientReading() {
+                currentElgatoBrightness = elgatoAmbientBrightness(
+                    ambientLux: ambient.illuminanceLux,
+                    progress: currentDayProgress,
+                    limits: brightnessLimits
+                )
+            } else {
+                if weatherAdjustmentEnabled, weatherService.lastFetchTime != nil {
+                    currentElgatoBrightness = elgatoRadianceBrightness(
+                        progress: currentDayProgress,
+                        limits: brightnessLimits,
+                        radiation: currentRadiation,
+                        diffuseRadiation: weatherService.currentDiffuseRadiation
+                    )
+                } else {
+                    currentElgatoBrightness = CircadianCurve.elgatoBrightness(
+                        progress: currentDayProgress,
+                        limits: brightnessLimits,
+                        radiationFactor: radiationFactor
+                    )
+                }
+            }
         } else {
             // Use legacy fixed schedule
             let (hueBrightness, elgatoBrightness) = brightnessSchedule.brightnessForCurrentTime()
@@ -298,6 +348,126 @@ final class AppState: ObservableObject {
 
     func refreshNow() async {
         await updateLights()
+    }
+
+    // MARK: - Cloud Adjustment Helpers
+
+    /// Calculate the actual cloud adjustment applied to color temperature.
+    /// Mirrors the logic in CircadianCurve.colorTemperature() for accurate display.
+    private func calculateActualCloudAdjustment(progress: Double, cloudCover: Int, maxBoost: Int) -> Int {
+        guard cloudCover > 0 else { return 0 }
+
+        // Curve value: 0 at night, sigmoidCosine during day
+        let curveValue: Double
+        if progress < 0 || progress > 1 {
+            curveValue = 0
+        } else {
+            curveValue = CircadianCurve.sigmoidCosine(progress)
+        }
+
+        // Daylight factor: fades during twilight
+        let daylightFactor: Double
+        if progress < 0 {
+            daylightFactor = 0
+        } else if progress < 0.1 {
+            daylightFactor = progress / 0.1
+        } else if progress <= 0.9 {
+            daylightFactor = 1.0
+        } else if progress <= 1.0 {
+            let twilightProgress = (progress - 0.9) / 0.1
+            daylightFactor = 1.0 - (twilightProgress * 0.5)
+        } else if progress <= 1.5 {
+            let afterSunsetProgress = (progress - 1.0) / 0.5
+            daylightFactor = 0.5 * (1.0 - afterSunsetProgress)
+        } else {
+            daylightFactor = 0
+        }
+
+        // Cloud boost with power curve
+        let cloudFactor = Double(cloudCover) / 100.0
+        let cloudBoost = pow(cloudFactor, 1.5) * Double(maxBoost)
+
+        // Actual applied = cloudBoost * daylightFactor * curveValue
+        return Int((cloudBoost * daylightFactor * curveValue).rounded())
+    }
+
+    // MARK: - Ambient Sensor Helpers
+
+    private func selectedAmbientReading() -> AmbientLightService.SensorReading? {
+        if ambientSensorSelection == "auto" {
+            return ambientLightService.autoSelectedSensor
+        }
+
+        if let selectedID = UInt64(ambientSensorSelection),
+           let match = ambientLightService.sensors.first(where: { $0.id == selectedID }) {
+            return match
+        }
+
+        return ambientLightService.autoSelectedSensor
+    }
+
+    private func ambientBlendWeight(forLux lux: Double) -> Double {
+        let low = max(0.001, ambientBrightnessLuxLow)
+        let high = max(low + 0.001, ambientBrightnessLuxHigh)
+        let clampedLux = max(0.001, lux)
+
+        let logLow = log10(low)
+        let logHigh = log10(high)
+        let logLux = log10(clampedLux)
+
+        let normalized = (logLux - logLow) / (logHigh - logLow)
+        return min(1.0, max(0.0, normalized))
+    }
+
+    private func elgatoAmbientBrightness(
+        ambientLux: Double,
+        progress: Double,
+        limits: CircadianCurve.BrightnessLimits
+    ) -> Int {
+        let range = Double(limits.elgatoMax - limits.elgatoMin)
+
+        let clampedProgress = min(1.0, max(0.0, progress))
+        let dayCurve = CircadianCurve.sigmoidCosine(clampedProgress)
+        let normalizedLux = ambientBlendWeight(forLux: ambientLux)
+        let gamma = max(0.1, ambientBrightnessGamma)
+        let luxFactor = pow(normalizedLux, gamma)
+
+        let curveValue = dayCurve * luxFactor
+        let brightness = Double(limits.elgatoMin) + curveValue * range
+        return min(limits.elgatoMax, max(limits.elgatoMin, Int(brightness.rounded())))
+    }
+
+    private func elgatoRadianceBrightness(
+        progress: Double,
+        limits: CircadianCurve.BrightnessLimits,
+        radiation: Double,
+        diffuseRadiation: Double
+    ) -> Int {
+        // Normalize shortwave radiation (typical clear-sky peak ~1000 W/m²)
+        let radiationNorm = min(1.0, max(0.0, radiation / 1000.0))
+        let radiationCurve = pow(radiationNorm, 1.5)
+
+        // Diffuse ratio helps distinguish "overcast" from "clear".
+        let diffuseRatio = radiation > 1 ? diffuseRadiation / radiation : 1.0
+        let overcastDamping = 1.0 - (min(1.0, diffuseRatio) * 0.7)
+        let indoorFactor = min(2.0, max(0.5, elgatoRadianceIndoorFactor))
+
+        // Progress outside 0-1 indicates night (extended twilight handled by caller).
+        let dayFactor: Double
+        if progress < 0 {
+            dayFactor = max(0, 1 + progress * 2)
+        } else if progress > 1 {
+            dayFactor = max(0, 1 - (progress - 1) * 2)
+        } else {
+            dayFactor = 1.0
+        }
+
+        var curveValue = radiationCurve * overcastDamping * indoorFactor * dayFactor
+        curveValue = min(1.0, max(0.0, curveValue))
+
+        let range = Double(limits.elgatoMax - limits.elgatoMin)
+        let brightness = Double(limits.elgatoMin) + curveValue * range
+        return min(limits.elgatoMax, max(limits.elgatoMin, Int(brightness.rounded())))
     }
 
     // MARK: - Persistence
