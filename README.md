@@ -55,6 +55,10 @@ Run `.build/debug/CircadianLights` from a terminal to see each update logged. Th
 - [ip-api](https://ip-api.com/) provides the IP-based location; its free endpoint is limited to non-commercial use.
 - The Key Light protocol is documented by the community project [adamesch/elgato-key-light-api](https://github.com/adamesch/elgato-key-light-api).
 
+## Project background
+
+- [Circadian Lights project overview](https://chabot.dev/projects/#CircadianLights) on Chris Chabot’s site.
+
 ## License
 
 This repository has no license file, so no open-source license has been granted. Solar and OpenMeteoSdk remain under their own MIT licenses.
